@@ -1,0 +1,147 @@
+- hosts: minikube
+  become: yes
+  become_user: root
+  
+  vars:
+    host_address: "case.com"
+    ssl_cert_type: "self-signed"
+
+  tasks:
+
+  - name: repositories update
+    ansible.builtin.apt:
+      update_cache: yes
+
+  - name: docker install
+    ansible.builtin.apt:
+      name: docker.io
+      state: present
+      
+  - name: minikube download
+    ansible.builtin.shell: curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-arm64
+
+  - name: minikube install 
+    ansible.builtin.shell: install minikube-linux-arm64 /usr/local/bin/minikube
+
+  - name: minikube start
+    ansible.builtin.shell: minikube start --driver=docker --extra-config=apiserver.service-node-port-range=10000-12000 --force 
+
+  - name: adding repo key for kubectl
+    ansible.builtin.shell: curl -fsSLo /etc/apt/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg
+
+  - name: adding repo for kubectl
+    ansible.builtin.apt_repository:
+      repo: deb [signed-by=/etc/apt/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main
+      state: present
+
+  - name: repositories update
+    ansible.builtin.apt:
+      update_cache: yes 
+
+  - name: kubectl install 
+    ansible.builtin.apt:
+      name: kubectl
+      state: present
+  
+  - name: minikube ingress addons enabling
+    ansible.builtin.shell: minikube addons enable ingress
+
+  - name: adding gpg key for helm 
+    ansible.builtin.shell: curl https://baltocdn.com/helm/signing.asc | gpg --dearmor | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
+
+  - name: repository adding 
+    ansible.builtin.apt_repository:
+      repo: deb [arch=arm64 signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main
+      state: present
+
+  - name: repositories update
+    ansible.builtin.apt:
+      update_cache: yes 
+
+  - name: helm install 
+    ansible.builtin.apt:
+      name: helm 
+      state: present
+
+  - name: python3-pip package install 
+    ansible.builtin.apt:
+      name: python3-pip
+      state: present
+
+  - name: adding kubernetes module
+    ansible.builtin.pip:
+      name: kubernetes
+
+  - name: namespace create for galaksiya 
+    kubernetes.core.k8s:
+      name: galaksiya
+      api_version: v1
+      kind: Namespace
+      state: present
+
+  - name: adding mysql helm repository
+    kubernetes.core.helm_repository:
+      name: wso2
+      repo_url: https://helm.wso2.com
+
+  - name: mysql deploy with helm 
+    kubernetes.core.helm:
+      name: mysql 
+      chart_ref: wso2/mysql
+      chart_version: 1.6.9
+      release_namespace: galaksiya
+      values:
+        imageTag: latest
+        mysqlRootPassword: Galaksiya.123123
+        mysqlUser: mert
+        mysqlPassword: Galaksiya.123123 
+        mysqlDatabase: wikijs 
+
+      
+  - name: adding helm repository for wikijs
+    kubernetes.core.helm_repository:
+      name: wikijs
+      repo_url: https://k8s-at-home.com/charts/
+
+  - name: wikijs deploy
+    kubernetes.core.helm:
+      name: wikijs
+      chart_ref: wikijs/wikijs
+      release_namespace: galaksiya
+      values:
+        ingress:
+          main:
+            enabled: true
+
+  - name: getting mysql pod name
+    ansible.builtin.shell: 
+      cmd: |
+        kubectl get pods -n galaksiya| grep mysql | awk '{print $1}'
+    register: result
+
+  - name: show result 
+    debug: 
+      msg: "{{ result.stdout }}"
+
+  - name: connect mysql & run query
+    ansible.builtin.shell:
+      cmd: |
+        kubectl exec -it {{ result.stdout }} -n galaksiya -- bash -c `mysql -u root -pGalaksiya.123123 -e "USE test; CREATE TABLE test_table (id INT, data VARCHAR(100)); INSERT INTO test_table (id, data) VALUES (1, 'Hello World');"`
+
+  - name: Optionally expose application using SSL
+    become: yes
+    when: ssl_cert_type != "none"
+    ansible.builtin.shell:
+      cmd: |
+        kubectl create secret tls test-tls --key="tls.key" --cert="tls.crt"
+
+  - name: Optionally provide monitoring platform
+    kubernetes.core.helm_repository:
+      name: elasticsearch
+      repo_url: https://helm.elastic.co
+
+  - name: ElasticSearch deploy
+    kubernetes.core.helm:
+      name: elasticsearch
+      chart_ref: elastic/elasticsearch
+      release_namespace: galaksiya
